@@ -1,0 +1,2 @@
+class CommitFailedError(Exception):
+    pass
