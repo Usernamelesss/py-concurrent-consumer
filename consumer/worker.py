@@ -6,8 +6,8 @@ from typing import Dict, List
 from confluent_kafka import Message, KafkaException, TopicPartition, Consumer
 from retry import retry
 
-from consumer.exceptions import CommitFailedError
-from consumer.fixture_handler import BaseEventHandler
+from .exceptions import CommitFailedError
+from lib_commons.consumer.handler import BaseEventHandler
 
 
 class Worker:
@@ -38,18 +38,20 @@ class Worker:
         else:
             raise RuntimeError("Cannot enqueue new messages on a shutting down worker")
 
+    def is_alive(self):
+        return self._worker.is_alive()
+
     def start(self):
         self._worker.start()  # FIXME non idempotent call --> RuntimeError: threads can only be started once
 
-    def stop(self, wait=True):
+    def stop(self):
         self.logger.debug('Stopping %s', self.name)
         self._stop_event.set()
         # Wait for all elements in queue to be processed --> cannot wait if not all task_done()
-        # self.queue.join()
-        # self.logger.debug('All elements in queue dequeued')
-        if wait:
-            # Wait for thread to finish its execution
-            self._worker.join()
+        self.queue.join()
+        self.logger.debug('All elements in queue dequeued')
+        # Wait for thread to finish its execution
+        self._worker.join()
         self.logger.debug('%s stopped', self.name)
 
     def handle_next_record(self):
@@ -76,17 +78,18 @@ class Worker:
             #     self._seek_to_current(message)
             #     continue
 
-    @retry(exceptions=Exception, tries=-1, backoff=1.5, delay=1, max_delay=10)
+    @retry(backoff=1.2, delay=0.1, max_delay=2)
     def _message_handler(self, message: Message):
         if self._stop_event.is_set():
             # This will dequeue all element from the Queue without processing them
+            self.queue.task_done()
             self.logger.info('%s is stopped, skipping message %s', self.name, message.key())
             return
 
         try:
             event_name = message.key().decode('utf-8')
-            self.logger.debug('Received %s from topic at offset %s of partition %s', event_name, message.offset(),
-                              message.partition())
+            self.logger.debug('Received %s from topic %s at offset %s of partition %s', event_name, message.topic(),
+                              message.offset(), message.partition())
 
             event_handler = self.event_handlers[event_name]
             event_payload = event_handler.decode(message.value())
@@ -94,21 +97,17 @@ class Worker:
             event_handler.handle(event_payload)
 
             self.queue.task_done()  # check the docs, this is a kind of counter on tasks in queue.
-            commit_result: List[TopicPartition] = self.consumer.commit(message=message, asynchronous=False)
-            for res in commit_result:
-                if res.error is not None:
-                    self.logger.debug('Failed to commit message %s', message)
-                    raise CommitFailedError(res)
+            self._commit_offset(message)
+
+            self.logger.info("successfully consumed %s from %s", event_payload.event_id, event_payload.topic)
+
         except Exception as e:
             self.logger.exception("Error in %s: %s", self.name, e)
             raise e
 
-    def _seek_to_current(self, message: Message):
-        offset = TopicPartition(message.topic(), message.partition(), message.offset())
-        # self.consumer.seek(offset)
-        try:
-            self.consumer.seek(offset)
-            self.logger.debug('Consumer offset seek to %s', offset)
-        except KafkaException:
-            self.logger.warning("Error seeking consumer offset to %s", offset)
-            # No action taken here: consumer could have lost partition ownership after a rebalance
+    def _commit_offset(self, message: Message):
+        commit_result: List[TopicPartition] = self.consumer.commit(message=message, asynchronous=False)
+        for res in commit_result:
+            if res.error is not None:
+                self.logger.debug('Failed to commit message %s', message)
+                raise CommitFailedError(res)

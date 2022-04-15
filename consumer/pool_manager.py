@@ -1,6 +1,6 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event
+from threading import Event, Lock
 from typing import List, Dict
 
 from confluent_kafka import Message, TopicPartition
@@ -22,6 +22,7 @@ class ConsumerPoolManager:
         self._pool: Dict[int, Worker] = {}
         self._stop_event = Event()
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._rebalance_lock = Lock()
 
     def dispatch(self, message: Message):
         if not self._stop_event.is_set():
@@ -41,35 +42,41 @@ class ConsumerPoolManager:
         if self._stop_event.is_set():
             return
 
-        for p in partitions:
-            worker = self._choose_worker(p.partition)
-            if self._pool.get(worker) is not None:
-                self.logger.debug("Adding worker for partition %s already assigned to a worker, skipping", p)
-                continue
-            self.logger.debug('Adding worker for partition %s', p)
-            self._pool[worker] = Worker(kafka_consumer=consumer.consumer,
-                                        event_handlers=consumer.event_handlers,
-                                        partition=p)
-            self._pool[worker].start()
+        with self._rebalance_lock:
+            for p in partitions:
+                worker = self._choose_worker(p.partition)
+                if self._pool.get(worker) is not None:
+                    self.logger.debug("Adding worker for partition %s already assigned to a worker, skipping", p)
+                    continue
+                self.logger.debug('Adding worker for partition %s', p)
+                self._pool[worker] = Worker(kafka_consumer=consumer.consumer,
+                                            event_handlers=consumer.event_handlers,
+                                            partition=p)
+                self._pool[worker].start()
 
     def dispose_workers(self, partitions: List[TopicPartition]):
         if self._stop_event.is_set():
             return
 
-        # FIXME: if there are fewer workers than partitions, this is not safe, because we could remove a worker used by
-        #        another partition
-        for p in partitions:
-            worker = self._choose_worker(p.partition)
-            if self._pool.get(worker) is None:
-                continue
+        with self._rebalance_lock:
+            # FIXME: if there are fewer workers than partitions, this is not safe, because we could remove a worker used
+            #        by another partition
+            for p in partitions:
+                worker = self._choose_worker(p.partition)
+                if self._pool.get(worker) is None:
+                    continue
 
-            self.logger.debug('Removing worker for partition %s', p)
+                self.logger.debug('Removing worker for partition %s', p)
 
-            with ThreadPoolExecutor() as pool:
-                pool.submit(self._pool[worker].stop)
-                pool.submit(self._pool.pop, worker)
-                # self._pool[worker].stop()
-                # self._pool.pop(worker)
+                with ThreadPoolExecutor() as pool:
+                    pool.submit(self._pool[worker].stop)
+                    pool.submit(self._pool.pop, worker)
 
     def _choose_worker(self, partition: PARTITION) -> int:
         return partition % self.max_workers
+
+    def is_alive(self):
+        """
+        Returns True is all threads in pool are alive
+        """
+        return all([thread.is_alive() for thread in self._pool.values()])

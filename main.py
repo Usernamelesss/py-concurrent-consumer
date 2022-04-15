@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import logging
 import os
 import signal
@@ -12,17 +13,33 @@ from consumer.fixture_handler import BaseEventHandler
 
 logging.basicConfig(level=logging.DEBUG,
                     format="[%(asctime)s.%(msecs)03d][%(threadName)s][%(levelname)s][%(name)s] - %(message)s",
-                    datefmt='%H:%M:%S', stream=sys.stdout)
+                    datefmt='%H:%M:%S')
+
+config = {
+    'bootstrap_servers': 'localhost:9093',
+    'api_version': '2.1.0',
+    'group_id': 'my_consumer',
+    'client_id': 'my_client_id',
+    'fetching': {
+        'offset_reset_policy': 'earliest',
+        'max_records': None,
+        'max_interval': None
+    }
+}
 
 
 def start_consumer(topic):
+    logging.basicConfig(level=logging.DEBUG,
+                        format="[%(asctime)s.%(msecs)03d][%(threadName)s][%(levelname)s][%(name)s] - %(message)s",
+                        datefmt='%H:%M:%S')
+    logging.getLogger('schedule').setLevel(logging.INFO)
     logging.getLogger().info('Starting topic %s... on PID: %s', topic, os.getpid())
     c = ConcurrentKafkaConsumer(
         config={
             'bootstrap.servers': 'kafka:9092',
-            'group.id': 'myid',
+            'group.id': 'my_consumer',
             'enable.auto.commit': False,
-            'auto.offset.reset': 'earliest'
+            'auto.offset.reset': 'beginning'
             # 'enable.auto.offset.store': False
         },
         event_handlers={'Event': BaseEventHandler()},
@@ -32,8 +49,8 @@ def start_consumer(topic):
     c.start()
 
 
-processes = [Process(target=start_consumer, args=('T1',), daemon=False),
-             Process(target=start_consumer, args=('T2',), daemon=False)]
+processes = [Process(target=start_consumer, args=('T1',), daemon=False, name='ConsumerProcess-T1'),
+             Process(target=start_consumer, args=('T2',), daemon=False, name='ConsumerProcess-T2')]
 stop = Event()
 
 
@@ -43,7 +60,8 @@ def cleanup(*args, **kwargs):
         proc.terminate()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+
     signal.signal(signal.SIGTERM, cleanup)
     signal.signal(signal.SIGINT, cleanup)
     tracemalloc.start()
@@ -55,6 +73,10 @@ if __name__ == '__main__':
 
         while not stop.is_set():
             sleep(5)
+            for p in processes:
+                if not p.is_alive():
+                    logging.getLogger().info("%s crashed, stopping service", p.name)
+                    signal.raise_signal(signal.SIGINT)
 
     finally:
         current, peak = tracemalloc.get_traced_memory()
