@@ -40,5 +40,7 @@ services:
 
   consumer:
     image: py-concurrent-consumer
+    command:
+      - concurrent
     build:
       context: .
