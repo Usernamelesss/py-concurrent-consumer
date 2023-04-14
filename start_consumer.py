@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import signal
+import config
 from multiprocessing import Process, Event as MEvent
 from threading import Thread, Event
 from time import sleep
@@ -15,14 +16,14 @@ from consumer.concurrent.concurrent_consumer import ConcurrentKafkaConsumer
 from consumer.parallel.parallel_consumer import ParallelKafkaConsumer
 
 parser = argparse.ArgumentParser()
-parser.add_argument('mode', choices=['concurrent', 'parallel'])
+parser.add_argument('--mode', choices=['concurrent', 'parallel'])
 
 logging.basicConfig(level=logging.DEBUG,
                     format="[%(asctime)s.%(msecs)03d][%(threadName)s][%(levelname)s][%(name)s] - %(message)s",
                     datefmt='%H:%M:%S')
 
 config = {
-    'bootstrap_servers': 'kafka:9092',
+    'bootstrap_servers': config.KAFKA_BOOTSTRAP,
     'api_version': (2, 1, 0),
     'group_id': 'my_consumer',
     'client_id': 'my_client_id',

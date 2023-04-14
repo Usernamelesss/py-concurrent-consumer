@@ -44,3 +44,5 @@ services:
       - concurrent
     build:
       context: .
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
